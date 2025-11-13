@@ -5,7 +5,13 @@ import subprocess
 import instaloader
 import yt_dlp
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from dotenv import load_dotenv
 
 # Включаем логирование
@@ -33,47 +39,72 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "- Instagram (посты с видео и Reels)"
     )
 
+
 # Функция для скачивания видео с YouTube
-
-
-async def download_youtube(url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def download_youtube(
+    url: str, update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     await update.message.reply_text("Начинаю скачивание видео с YouTube...")
-    chrome_profile_path = '/home/ser/.config/chromium/Default/'
+
+    # Создаем директорию, если она не существует
+    os.makedirs("downloads", exist_ok=True)
 
     ydl_opts = {
-        'format': 'best[filesize<50M]',  # Ограничение размера файла в 50 МБ
-        'outtmpl': 'downloads/%(title)s.%(ext)s',
-        # Берем cookies напрямую из браузера Chrome
-        'cookiesfrombrowser': ('chromium', chrome_profile_path),
-        'quiet': True,  # Убираем лишний вывод в консоль
-        'no_warnings': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android'],
-            },
-        },
+        "format": "best[filesize<50M]",
+        "outtmpl": "downloads/%(title)s.%(ext)s",
+        "quiet": True,
+        "no_warnings": True,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     }
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info_dict)
 
-        await context.bot.send_video(chat_id=update.effective_chat.id, video=open(filename, 'rb'))
+        # Проверяем существование файла
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"Файл не найден: {filename}")
+
+        with open(filename, "rb") as video_file:
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id, video=video_file
+            )
+
+        # Удаляем файл после успешной отправки
+        os.remove(filename)
         await update.message.reply_text("Готово!")
-        os.remove(filename)  # Удаляем файл после отправки
+
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"Ошибка скачивания: {e}")
+        await update.message.reply_text(
+            "Не удалось скачать видео. Попробуйте другой URL."
+        )
+    except FileNotFoundError as e:
+        logger.error(f"Файл не найден: {e}")
+        await update.message.reply_text("Ошибка: файл не был создан.")
     except Exception as e:
-        logger.error(f"Ошибка при скачивании с YouTube: {e}")
-        await update.message.reply_text(f"Не удалось скачать видео. Ошибка: {e}")
+        logger.error(f"Непредвиденная ошибка: {e}")
+        await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
+
 
 # Функция для скачивания видео с Instagram
 
 
-async def download_instagram(url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def download_instagram(
+    url: str, update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     await update.message.reply_text("Начинаю скачивание видео с Instagram...")
 
-    L = instaloader.Instaloader(download_videos=True, download_pictures=False, download_video_thumbnails=False,
-                                download_geotags=False, download_comments=False, save_metadata=False, compress_json=False)
+    L = instaloader.Instaloader(
+        download_videos=True,
+        download_pictures=False,
+        download_video_thumbnails=False,
+        download_geotags=False,
+        download_comments=False,
+        save_metadata=False,
+        compress_json=False,
+    )
 
     # Извлекаем shortcode из URL
     shortcode = url.split("/")[-2]
@@ -90,7 +121,10 @@ async def download_instagram(url: str, update: Update, context: ContextTypes.DEF
         for filename in os.listdir(f"downloads/{shortcode}"):
             if filename.endswith(".mp4"):
                 filepath = f"downloads/{shortcode}/{filename}"
-                await context.bot.send_video(chat_id=update.effective_chat.id, video=open(filepath, 'rb'))
+                await context.bot.send_video(
+                    chat_id=update.effective_chat.id, video=open(
+                        filepath, "rb")
+                )
                 await update.message.reply_text("Готово!")
                 # Удаляем директорию с файлом
                 subprocess.run(["rm", "-rf", f"downloads/{shortcode}"])
@@ -100,6 +134,7 @@ async def download_instagram(url: str, update: Update, context: ContextTypes.DEF
     except Exception as e:
         logger.error(f"Ошибка при скачивании с Instagram: {e}")
         await update.message.reply_text(f"Не удалось скачать видео. Ошибка: {e}")
+
 
 # Основной обработчик сообщений
 
@@ -111,13 +146,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif "instagram.com" in url:
         await download_instagram(url, update, context)
     else:
-        await update.message.reply_text("Пожалуйста, отправь мне ссылку на YouTube или Instagram.")
+        await update.message.reply_text(
+            "Пожалуйста, отправь мне ссылку на YouTube или Instagram."
+        )
 
 
 def main() -> None:
     # Создаем директорию для загрузок, если ее нет
-    if not os.path.exists('downloads'):
-        os.makedirs('downloads')
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
 
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
@@ -129,8 +166,9 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
     application.run_polling()
 
