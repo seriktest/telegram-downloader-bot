@@ -1,16 +1,17 @@
-# bot.py
 import logging
 import os
 import shutil
 from pathlib import Path
 from typing import Optional
+
 import instaloader
 import yt_dlp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# Настройка логирования
+load_dotenv()
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -19,11 +20,7 @@ logging.basicConfig(
 # Константы
 DOWNLOADS_DIR = Path("downloads")
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ
-
-
 logger = logging.getLogger(__name__)
-load_dotenv()
-
 
 class VideoDownloader:
     """Класс для управления загрузкой видео"""
@@ -45,31 +42,38 @@ class VideoDownloader:
             'max_filesize': MAX_FILE_SIZE,
         }
 
+        file_path = None
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info_dict = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info_dict)
+                file_path = Path(filename)
 
-            file_path = Path(filename)
-            if file_path.exists():
-                # Проверяем размер файла перед отправкой
-                file_size = file_path.stat().st_size
-                if file_size > MAX_FILE_SIZE:
-                    await update.message.reply_text(
-                        f"Видео слишком большое ({file_size / 1024 / 1024:.1f} МБ). "
-                        f"Максимальный размер: {MAX_FILE_SIZE / 1024 / 1024} МБ"
-                    )
-                    file_path.unlink()  # Удаляем файл
-                    return
-                await context.bot.send_video(
-                    chat_id=update.effective_chat.id,
-                    video=open(file_path, 'rb'),
-                    supports_streaming=True
-                )
-                await update.message.reply_text("Видео успешно скачано и отправлено!")
-                file_path.unlink()  # Удаляем файл после отправки
-            else:
-                await update.message.reply_text("Не удалось найти скачанный файл.")
+                logger.info(f"Попытка скачать файл: {file_path}")
+
+                if file_path.exists():
+                    # Проверяем размер файла перед отправкой
+                    file_size = file_path.stat().st_size
+                    logger.info(f"Размер файла: {file_size / 1024 / 1024:.1f} МБ")
+
+                    if file_size > MAX_FILE_SIZE:
+                        await update.message.reply_text(
+                            f"Видео слишком большое ({file_size / 1024 / 1024:.1f} МБ). "
+                            f"Максимальный размер: {MAX_FILE_SIZE / 1024 / 1024} МБ"
+                        )
+                        return
+
+
+                    with open(file_path, 'rb') as video:
+                        await context.bot.send_video(
+                            chat_id=update.effective_chat.id,
+                            video=video,
+                            supports_streaming=True
+                        )
+
+                    await update.message.reply_text("Видео успешно скачано и отправлено!")
+                else:
+                    await update.message.reply_text("Не удалось найти скачанный файл.")
 
         except yt_dlp.DownloadError as e:
             logger.error(f"Ошибка скачивания с YouTube: {e}")
@@ -77,10 +81,17 @@ class VideoDownloader:
         except Exception as e:
             logger.error(f"Неожиданная ошибка при работе с YouTube: {e}")
             await update.message.reply_text("Произошла ошибка при обработке видео.")
+        finally:
+            # Удаляем файл если он существует
+            if file_path and file_path.exists():
+                file_path.unlink()
+                logger.info(f"Файл удален: {file_path}")
 
     async def download_instagram(self, url: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Скачивает видео с Instagram"""
         await update.message.reply_text("Начинаю скачивание видео с Instagram...")
+
+        target_dir = None
 
         try:
             L = instaloader.Instaloader(
@@ -90,47 +101,53 @@ class VideoDownloader:
                 download_geotags=False,
                 download_comments=False,
                 save_metadata=False,
-                compress_json=False
+                compress_json=False,
+                dirname_pattern = str(DOWNLOADS_DIR / "{shortcode}"),
+                filename_pattern = "{shortcode}"
             )
 
-            # Извлекаем shortcode из URL
             shortcode = self._extract_instagram_shortcode(url)
             if not shortcode:
                 await update.message.reply_text("Неверная ссылка на Instagram.")
                 return
 
+            logger.info(f"Shortcode: {shortcode}")
+
             post = instaloader.Post.from_shortcode(L.context, shortcode)
             target_dir = DOWNLOADS_DIR / shortcode
+
+            logger.info(f"Целевая директория: {target_dir}")
 
             # Скачиваем пост
             L.download_post(post, target=str(target_dir))
 
             # Ищем видеофайл
             video_file = self._find_video_file(target_dir)
+            logger.info(f"Найденный видеофайл: {video_file}")
+
             if video_file and video_file.exists():
-                # Проверяем размер файла перед отправкой
                 file_size = video_file.stat().st_size
+                logger.info(f"Размер видео: {file_size / 1024 / 1024:.1f} МБ")
+
                 if file_size > MAX_FILE_SIZE:
                     await update.message.reply_text(
                         f"Видео слишком большое ({file_size / 1024 / 1024:.1f} МБ). "
                         f"Максимальный размер: {MAX_FILE_SIZE / 1024 / 1024} МБ"
                     )
-                    # Очищаем директорию
-                    if target_dir.exists():
-                        shutil.rmtree(target_dir)
-                    return
-                await context.bot.send_video(
-                    chat_id=update.effective_chat.id,
-                    video=open(video_file, 'rb'),
-                    supports_streaming=True
-                )
-                await update.message.reply_text("Видео успешно скачано и отправлено!")
+                else:
+                    try:
+                        with open(video_file, 'rb') as video:
+                            await context.bot.send_video(
+                                chat_id=update.effective_chat.id,
+                                video=video,
+                                supports_streaming=True
+                            )
+                        await update.message.reply_text("Видео успешно скачано и отправлено!")
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке видео: {e}")
+                        await update.message.reply_text(f"Произошла ошибка при отправке видео: {str(e)}")
             else:
                 await update.message.reply_text("В этом посте нет видео или оно недоступно.")
-
-            # Очищаем директорию
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
 
         except instaloader.exceptions.InstaloaderException as e:
             logger.error(f"Ошибка Instagram загрузчика: {e}")
@@ -138,6 +155,11 @@ class VideoDownloader:
         except Exception as e:
             logger.error(f"Неожиданная ошибка при работе с Instagram: {e}")
             await update.message.reply_text("Произошла ошибка при обработке Instagram видео.")
+        finally:
+            # Всегда очищаем директорию если она существует
+            if target_dir and target_dir.exists():
+                shutil.rmtree(target_dir)
+                logger.info(f"Директория {target_dir} очищена")
 
     def _extract_instagram_shortcode(self, url: str) -> Optional[str]:
         """Извлекает shortcode из Instagram URL"""
@@ -155,26 +177,34 @@ class VideoDownloader:
             return None
 
     def _find_video_file(self, directory: Path) -> Optional[Path]:
-        """Ищет видео файл в директории"""
+        """Ищет видео файл в директории (включая подпапки)"""
         if not directory.exists():
+            logger.warning(f"Директория не существует: {directory}")
             return None
 
-        for file_path in directory.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in ['.mp4', '.mov']:
-                return file_path
-        return None
+        logger.info(f"Поиск видео в директории (рекурсивно): {directory}")
 
+        # Рекурсивный поиск всех .mp4 и .mov файлов
+        video_files = list(directory.rglob("*.mp4")) + list(directory.rglob("*.mov"))
+
+        for vf in video_files:
+            logger.info(f"Найден видеофайл: {vf} (размер: {vf.stat().st_size} байт)")
+
+        # Сортируем по размеру (на случай, если есть превьюшки) — берём самый большой
+        if video_files:
+            return max(video_files, key=lambda f: f.stat().st_size)
+
+        return None
 
 class TelegramBot:
     """Основной класс Telegram бота"""
 
     def __init__(self):
         self.downloader = VideoDownloader()
-        self.token = os.getenv("TELEGRAM_TOKEN")
+        self.token = os.getenv("BOT_TOKEN")
 
         if not self.token:
-            raise ValueError(
-                "Токен не найден. Установите переменную окружения TELEGRAM_TOKEN.")
+            raise ValueError("Токен не найден. Установите переменную окружения BOT_TOKEN.")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик команды /start"""
